@@ -51,14 +51,13 @@ def read_temperature_sensors(client, num_sensors=8):
     
     try:
         # Read all 8 temperature registers at once
-        # Most MODBUS temp receivers store one temperature per register
-        result = client.read_holding_registers(
-            address=TEMP_START_REGISTER,
-            count=num_sensors,
-            unit=MODBUS_ADDRESS
-        )
+        result = client.read_holding_registers(TEMP_START_REGISTER, 
+                                               count=num_sensors, 
+                                               device_id=MODBUS_ADDRESS)
         
-        if result.isError():
+        # if result.isError():
+        # result can be None with some transports/versions; guard against that
+        if not result or getattr(result, "isError", lambda: False)():
             print(f"ERROR: MODBUS read failed: {result}")
             return temperatures
         
