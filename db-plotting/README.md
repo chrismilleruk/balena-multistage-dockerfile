@@ -90,3 +90,20 @@ The TimescaleDB service is defined in `../docker-compose.yml`:
 - **Database**: sensor_data
 - **User**: sensor_user
 - **Password**: sensor_password
+
+## Appendix: Example Visualizations
+
+### Temperature Time Series
+Shows temperature readings over time for all sensors:
+
+![Temperature Time Series](../public/temperature_timeseries.png)
+
+### Sensor Comparison
+Average temperature by sensor with min/max ranges:
+
+![Sensor Comparison](../public/sensor_comparison.png)
+
+### Raw Values Distribution
+Histogram showing the distribution of raw ADC values:
+
+![Raw Values Distribution](../public/raw_values_distribution.png)
