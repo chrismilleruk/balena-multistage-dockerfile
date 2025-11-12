@@ -1,6 +1,22 @@
 version: "2"
 
 services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    environment:
+      POSTGRES_USER: sensor_user
+      POSTGRES_PASSWORD: sensor_password
+      POSTGRES_DB: sensor_data
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sensor_user -d sensor_data"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   temp-monitor:
     build:
       context: .
@@ -8,6 +24,19 @@ services:
     privileged: true
     devices:
       - "/dev/ttyACM0:/dev/ttyACM0"
+    depends_on:
+      - timescaledb
+    environment:
+      DATABASE_URL: postgresql://sensor_user:sensor_password@timescaledb:5432/sensor_data
+      SERIAL_PORT: /dev/ttyACM0
+      BAUDRATE: 9600
+      MODBUS_ADDRESS: 1
+      TIMEOUT: 3
+      POLL_INTERVAL: 5
     labels:
       io.balena.features.kernel-modules: '1'
       io.balena.features.firmware: '1'
+
+volumes:
+  timescaledb_data:
+  timescaledb_dev_data:

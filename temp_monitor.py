@@ -2,13 +2,17 @@
 """
 Temperature Monitor for R4DCB08 8-Bit RS485 Temperature Receiver
 Reads up to 8 DS18B20 sensors via MODBUS RTU protocol
+Stores data in TimescaleDB
 """
 
 import time
 import sys
 import os
+from datetime import datetime
 from pymodbus.client import ModbusSerialClient
 from pymodbus.exceptions import ModbusException
+import psycopg2
+from psycopg2.extras import execute_batch
 
 # Configuration from environment variables with defaults
 SERIAL_PORT = os.getenv('SERIAL_PORT', '/dev/ttyACM0')
@@ -23,6 +27,90 @@ BYTESIZE = int(os.getenv('BYTESIZE', '8'))
 TEMP_START_REGISTER = int(os.getenv('TEMP_START_REGISTER', '0'))
 NUM_SENSORS = int(os.getenv('NUM_SENSORS', '8'))
 POLL_INTERVAL = int(os.getenv('POLL_INTERVAL', '5'))
+
+# Database configuration
+DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://sensor_user:sensor_password@localhost:5432/sensor_data')
+
+def init_database():
+    """Initialize database connection and create table if needed"""
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        
+        # Create table for sensor data with TimescaleDB hypertable
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS sensor_readings (
+                time TIMESTAMPTZ NOT NULL,
+                sensor_id INTEGER NOT NULL,
+                temperature_celsius DOUBLE PRECISION NOT NULL,
+                temperature_fahrenheit DOUBLE PRECISION NOT NULL,
+                raw_value INTEGER
+            );
+        """)
+        
+        # Convert to hypertable if not already done
+        try:
+            cursor.execute("""
+                SELECT create_hypertable('sensor_readings', 'time', if_not_exists => TRUE);
+            """)
+        except Exception as e:
+            # Table may already be a hypertable
+            pass
+        
+        # Create index for better query performance
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS sensor_readings_sensor_id_time 
+            ON sensor_readings (sensor_id, time DESC);
+        """)
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print("Database initialized successfully")
+        return True
+    except Exception as e:
+        print(f"ERROR: Failed to initialize database: {e}")
+        return False
+
+def store_sensor_data(temperatures):
+    """Store sensor readings in TimescaleDB"""
+    if not temperatures:
+        return False
+    
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        
+        data_to_insert = []
+        timestamp = datetime.now()
+        
+        for sensor_num, data in temperatures.items():
+            data_to_insert.append((
+                timestamp,
+                sensor_num,
+                data['celsius'],
+                data['fahrenheit'],
+                data['raw']
+            ))
+        
+        # Insert data
+        execute_batch(
+            cursor,
+            """
+            INSERT INTO sensor_readings (time, sensor_id, temperature_celsius, temperature_fahrenheit, raw_value)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            data_to_insert
+        )
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print(f"Stored {len(data_to_insert)} sensor readings in database")
+        return True
+    except Exception as e:
+        print(f"ERROR: Failed to store sensor data: {e}")
+        return False
 
 def init_modbus_client():
     """Initialize MODBUS RTU client"""
@@ -134,6 +222,13 @@ def main():
     print(f"Serial Port: {SERIAL_PORT}")
     print(f"MODBUS Address: {MODBUS_ADDRESS}")
     print(f"Baudrate: {BAUDRATE}")
+    print(f"Database URL: {DATABASE_URL}")
+    
+    # Initialize database
+    print("\nInitializing database...")
+    if not init_database():
+        print("ERROR: Could not initialize database")
+        sys.exit(1)
     
     client = init_modbus_client()
     
@@ -152,6 +247,9 @@ def main():
         while True:
             temperatures = read_temperature_sensors(client, NUM_SENSORS)
             display_temperatures(temperatures)
+            
+            # Store data in database
+            store_sensor_data(temperatures)
             
             # Read at configured interval
             time.sleep(POLL_INTERVAL)

@@ -1,6 +1,6 @@
 FROM balenalib/%%BALENA_MACHINE_NAME%%-alpine-python as build
-RUN install_packages gcc musl-dev libffi-dev
-RUN pip3 install --no-cache-dir pymodbus pyserial
+RUN install_packages gcc musl-dev libffi-dev postgresql-dev
+RUN pip3 install --no-cache-dir pymodbus pyserial psycopg2-binary
 RUN echo "build" > /build.txt
 CMD [ "balena-idle" ]
 
@@ -9,7 +9,8 @@ COPY --from=build /build.txt /build.txt
 RUN echo "prod" > /prod.txt
 
 # Install runtime dependencies
-RUN pip3 install --no-cache-dir pymodbus pyserial
+RUN install_packages postgresql-libs
+RUN pip3 install --no-cache-dir pymodbus pyserial psycopg2-binary
 
 # Copy application
 COPY temp_monitor.py /usr/src/app/temp_monitor.py
@@ -24,7 +25,8 @@ COPY --from=build /build.txt /build.txt
 RUN echo "dev" > /dev.txt
 
 # Install runtime and dev dependencies
-RUN pip3 install --no-cache-dir pymodbus pyserial
+RUN install_packages postgresql-libs
+RUN pip3 install --no-cache-dir pymodbus pyserial psycopg2-binary
 
 # Copy application
 COPY temp_monitor.py /usr/src/app/temp_monitor.py
