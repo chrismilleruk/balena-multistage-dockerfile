@@ -1,7 +1,13 @@
 version: "2"
 
 services:
-  hello:
+  temp-monitor:
     build:
       context: .
       target: prod
+    privileged: true
+    devices:
+      - "/dev/ttyACM0:/dev/ttyACM0"
+    labels:
+      io.balena.features.kernel-modules: '1'
+      io.balena.features.firmware: '1'

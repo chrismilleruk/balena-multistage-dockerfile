@@ -1,5 +1,8 @@
 services:
-  hello:
+  temp-monitor:
     build:
       context: .
       target: dev
+    privileged: true
+    devices:
+      - "/dev/ttyACM0:/dev/ttyACM0"

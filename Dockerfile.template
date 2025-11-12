@@ -1,13 +1,50 @@
-FROM balenalib/%%BALENA_MACHINE_NAME%%-alpine as build
+FROM balenalib/%%BALENA_MACHINE_NAME%%-alpine-python as build
+RUN install_packages gcc musl-dev libffi-dev
+RUN pip3 install --no-cache-dir pymodbus pyserial
 RUN echo "build" > /build.txt
 CMD [ "balena-idle" ]
 
-FROM balenalib/%%BALENA_MACHINE_NAME%%-alpine as prod
+FROM balenalib/%%BALENA_MACHINE_NAME%%-alpine-python as prod
 COPY --from=build /build.txt /build.txt
 RUN echo "prod" > /prod.txt
-CMD [ "balena-idle" ]
 
-FROM balenalib/%%BALENA_MACHINE_NAME%%-alpine as dev
+# Install runtime dependencies
+RUN pip3 install --no-cache-dir pymodbus pyserial
+
+# Copy application
+COPY temp_monitor.py /usr/src/app/temp_monitor.py
+RUN chmod +x /usr/src/app/temp_monitor.py
+
+WORKDIR /usr/src/app
+
+CMD ["python3", "/usr/src/app/temp_monitor.py"]
+
+FROM balenalib/%%BALENA_MACHINE_NAME%%-alpine-python as dev
 COPY --from=build /build.txt /build.txt
 RUN echo "dev" > /dev.txt
-CMD [ "balena-idle" ]
+
+# Install runtime and dev dependencies
+RUN pip3 install --no-cache-dir pymodbus pyserial
+
+# Copy application
+COPY temp_monitor.py /usr/src/app/temp_monitor.py
+RUN chmod +x /usr/src/app/temp_monitor.py
+
+# Configure bash for Warp compatibility with read-only filesystem
+# Set HISTFILE to writable location before Warp initialization
+# RUN echo 'export HISTFILE=/tmp/.bash_history' >> /etc/profile && \
+#     echo 'export HISTFILE=/tmp/.bash_history' >> /etc/bash.bashrc && \
+#     echo '' >> /etc/bash.bashrc && \
+#     echo '# Auto-Warpify - InitSubshell hook' >> /etc/bash.bashrc && \
+#     echo '[ -z $WARP_BOOTSTRAPPED ] && printf "\\e]9278;f{\\"hook\\": \\"InitSubshell\\", \\"value\\": { \\"shell\\": \\"%s\\", \\"uname\\": \\"%s\\" }}\\a" $([ $FISH_VERSION ] && echo "fish" || { echo $0 | command -p grep -q zsh && echo "zsh"; } || { echo $0 | command -p grep -q bash && echo "bash"; } || echo "unknown") $(uname)' >> /etc/bash.bashrc && \
+#     echo '' >> /etc/bash.bashrc && \
+#     echo '# Auto-Warpify - InitShell hook' >> /etc/bash.bashrc && \
+#     echo '[ -z $WARP_BOOTSTRAPPED ] && eval '"'"'export WARP_HONOR_PS1=0; command -p stty raw; unset PROMPT_COMMAND; HISTCONTROL=ignorespace; HISTIGNORE=" *"; WARP_IS_SUBSHELL=1; WARP_SESSION_ID="$(command -p date +%s)$RANDOM"; _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n); _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER); _msg=$(printf "{\\"hook\\": \\"InitShell\\", \\"value\\": {\\"session_id\\": $WARP_SESSION_ID, \\"shell\\": \\"bash\\", \\"user\\": \\"%s\\", \\"hostname\\": \\"%s\\", \\"is_subshell\\": true}}" "$_user" "$_hostname" | command -p od -An -v -tx1 | command -p tr -d " \\n"); if [[ "$OS" == Windows_NT ]]; then WARP_IN_MSYS2=true; else WARP_IN_MSYS2=false; fi; WARP_USING_WINDOWS_CON_PTY=false; if [ "$WARP_USING_WINDOWS_CON_PTY" = true ]; then printf '"'"'"'"'"'"'"'\\e]9278;d;%s\\x07'"'"'"'"'"'"'"' "$_msg"; else printf '"'"'"'"'"'"'"'\\e\\x50\\x24\\x64%s\\x9c'"'"'"'"'"'"'"' "$_msg"; fi; unset _hostname _user _msg'"'"' >> /etc/bash.bashrc
+
+RUN echo 'export HISTFILE=/tmp/.bash_history' >> /etc/bash.bashrc
+RUN echo '[ -z $WARP_BOOTSTRAPPED ] && eval '\''export WARP_HONOR_PS1=0;  command -p stty raw;unset PROMPT_COMMAND;HISTCONTROL=ignorespace;HISTIGNORE=" *";WARP_IS_SUBSHELL=1;WARP_SESSION_ID="$(command -p date +%s)$RANDOM";_hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n);_user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER);_msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"bash\", \"user\": \"%s\", \"hostname\": \"%s\", \"is_subshell\": true}}" "$_user" "$_hostname" | command -p od -An -v -tx1 | command -p tr -d " \n");if [[ "$OS" == Windows_NT ]]; then WARP_IN_MSYS2=true; else WARP_IN_MSYS2=false; fi;WARP_USING_WINDOWS_CON_PTY=false;if [ "$WARP_USING_WINDOWS_CON_PTY" = true ]; then printf '\''\''\''\e]9278;d;%s\x07'\''\''\'' "$_msg"; else printf '\''\''\''\e\x50\x24\x64%s\x9c'\''\''\'' "$_msg"; fi;unset _hostname _user _msg'\''' >> /etc/bash.bashrc
+RUN echo -e '\n# Auto-Warpify\n[[ "$-" == *i* ]] && printf '\''\eP$f{"hook": "SourcedRcFileForWarp","value": { "shell": "bash", "uname": "'$(uname)'", "tmux": false }}\x9c'\'' ' >> ~/.bashrc
+
+WORKDIR /usr/src/app
+
+CMD ["python3", "/usr/src/app/temp_monitor.py"]
