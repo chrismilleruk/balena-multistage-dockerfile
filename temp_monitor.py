@@ -26,7 +26,14 @@ BYTESIZE = int(os.getenv('BYTESIZE', '8'))
 # Temperature register addresses (function 03 - Read Holding Registers)
 TEMP_START_REGISTER = int(os.getenv('TEMP_START_REGISTER', '0'))
 NUM_SENSORS = int(os.getenv('NUM_SENSORS', '8'))
-POLL_INTERVAL = int(os.getenv('POLL_INTERVAL', '5'))
+POLL_INTERVAL = int(os.getenv('POLL_INTERVAL', '15'))
+
+# Optional: registers where DS18B20 ROM codes are exposed by the device
+# If your MODBUS device exposes the 8-byte ROM per sensor in holding registers,
+# set ROM_START_REGISTER and ROM_REGISTERS_PER_SENSOR accordingly.
+ROM_START_REGISTER_ENV = os.getenv('ROM_START_REGISTER', '')
+ROM_START_REGISTER = int(ROM_START_REGISTER_ENV) if ROM_START_REGISTER_ENV != '' else None
+ROM_REGISTERS_PER_SENSOR = int(os.getenv('ROM_REGISTERS_PER_SENSOR', '4'))  # 8 bytes -> 4 registers
 
 # Database configuration
 DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://sensor_user:sensor_password@localhost:5432/sensor_data')
@@ -72,27 +79,161 @@ def init_database():
         print(f"ERROR: Failed to initialize database: {e}")
         return False
 
+
+def read_sensor_roms(client, start_register, num_sensors, registers_per_sensor=4):
+    """Read ROM codes for DS18B20 sensors exposed as holding registers.
+
+    This is device-specific. Many R4DCB08-style devices may expose the 8-byte
+    ROM code (64-bit) per sensor across consecutive registers. Each register
+    is 2 bytes, so 4 registers per sensor.
+
+    Returns: dict mapping port_number (1-based) -> rom_hex (string) on success.
+    If read fails or ROM_START_REGISTER not configured, returns empty dict.
+    """
+    roms = {}
+    if start_register is None:
+        return roms
+
+    try:
+        count = num_sensors * registers_per_sensor
+        result = client.read_holding_registers(start_register, count=count, device_id=MODBUS_ADDRESS)
+        if not result or getattr(result, "isError", lambda: False)():
+            print(f"INFO: ROM read failed or not available at register {start_register}: {result}")
+            return roms
+
+        regs = result.registers
+        for i in range(num_sensors):
+            start = i * registers_per_sensor
+            chunk = regs[start:start + registers_per_sensor]
+            # Convert registers (16-bit) into bytes. Assume big-endian register order
+            b = bytearray()
+            for reg in chunk:
+                high = (reg >> 8) & 0xFF
+                low = reg & 0xFF
+                b.append(high)
+                b.append(low)
+
+            # ROM is 8 bytes; trim/pad if necessary
+            rom_bytes = bytes(b[:8])
+            roms[i + 1] = rom_bytes.hex()
+
+    except Exception as e:
+        print(f"ERROR: Failed reading sensor ROMs: {e}")
+
+    return roms
+
+
+def ensure_sensors_table_and_rows():
+    """Create sensors table and ensure rows exist for ports 1..NUM_SENSORS.
+
+    The `id` column is the durable sensor identifier and by default we create
+    entries with id == port_number to maintain backwards compatibility with
+    existing `sensor_readings.sensor_id` values.
+    """
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS sensors (
+                id INTEGER PRIMARY KEY,
+                port_number INTEGER NOT NULL,
+                rom_code TEXT UNIQUE,
+                calibration_offset_raw INTEGER DEFAULT 0
+            );
+        """)
+
+        # Ensure rows exist for the current ports. Use id == port_number to avoid migration.
+        for port in range(1, NUM_SENSORS + 1):
+            cursor.execute(
+                """
+                INSERT INTO sensors (id, port_number)
+                VALUES (%s, %s)
+                ON CONFLICT (id) DO UPDATE SET port_number = EXCLUDED.port_number;
+                """,
+                (port, port)
+            )
+
+        # Index for lookups
+        cursor.execute("CREATE INDEX IF NOT EXISTS sensors_port_number_idx ON sensors (port_number);")
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print("Sensors table ensured")
+        return True
+    except Exception as e:
+        print(f"ERROR: Failed to ensure sensors table: {e}")
+        return False
+
+
+def display_sensors_calibration():
+    """Display the current sensors table (ids, offsets, ROM codes) for reference."""
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, port_number, rom_code, calibration_offset_raw FROM sensors ORDER BY id")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        print("\n" + "="*80)
+        print("Sensor Configuration (Calibration Table)")
+        print("="*80)
+        if not rows:
+            print("(No sensors configured)")
+        else:
+            print(f"{'ID':<4} {'Port':<6} {'Calibration Offset (raw 0.1°C)':<32} {'ROM Code':<20}")
+            print("-"*80)
+            for sensor_id, port, rom, offset_raw in rows:
+                rom_str = rom if rom else "(not set)"
+                offset_str = f"{int(offset_raw)}" if offset_raw else "0"
+                print(f"{sensor_id:<4} {port:<6} {offset_str:<32} {rom_str:<20}")
+        print("="*80 + "\n")
+    except Exception as e:
+        print(f"WARNING: Could not display sensors table: {e}\n")
+
 def store_sensor_data(temperatures):
     """Store sensor readings in TimescaleDB"""
     if not temperatures:
         return False
-    
+
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
-        
+
+        # Load sensor registry mapping: port_number -> (id, calibration_offset_raw)
+        cursor.execute("SELECT id, port_number, calibration_offset_raw FROM sensors")
+        rows = cursor.fetchall()
+        port_map = {row[1]: (row[0], row[2] or 0) for row in rows}
+
         data_to_insert = []
         timestamp = datetime.now()
-        
-        for sensor_num, data in temperatures.items():
+
+        for sensor_port, data in temperatures.items():
+            # Map port to sensor registry id, fallback to using the port number to preserve compatibility
+            sensor_id, offset_raw = port_map.get(sensor_port, (sensor_port, 0))
+
+            # Apply calibration offset to raw value FIRST, then convert to temperature
+            raw_value = data['raw']
+            adjusted_raw = raw_value + offset_raw
+            
+            # Convert adjusted raw value to temperature
+            if adjusted_raw > 32767:  # If MSB is set (negative temperature)
+                temp_c = (adjusted_raw - 65536) / 10.0
+            else:
+                temp_c = adjusted_raw / 10.0
+            
+            temp_f = (temp_c * 9/5) + 32
+
             data_to_insert.append((
                 timestamp,
-                sensor_num,
-                data['celsius'],
-                data['fahrenheit'],
-                data['raw']
+                sensor_id,
+                temp_c,
+                temp_f,
+                raw_value
             ))
-        
+
         # Insert data
         execute_batch(
             cursor,
@@ -102,7 +243,7 @@ def store_sensor_data(temperatures):
             """,
             data_to_insert
         )
-        
+
         conn.commit()
         cursor.close()
         conn.close()
@@ -223,6 +364,7 @@ def main():
     print(f"MODBUS Address: {MODBUS_ADDRESS}")
     print(f"Baudrate: {BAUDRATE}")
     print(f"Database URL: {DATABASE_URL}")
+    print(f"Poll Interval: {POLL_INTERVAL}")
     
     # Initialize database
     print("\nInitializing database...")
@@ -242,6 +384,35 @@ def main():
         sys.exit(1)
     
     print("Connected successfully!\n")
+    # Ensure sensors registry exists (id == port_number by default for compat)
+    if not ensure_sensors_table_and_rows():
+        print("WARNING: Could not ensure sensors table; continuing but sensor mapping may not be available.")
+
+    # Display current sensor configuration and calibration offsets
+    display_sensors_calibration()
+
+    # Optionally read ROM codes from device and update sensors table if ROM registers configured
+    if ROM_START_REGISTER is not None:
+        print(f"Attempting to read sensor ROMs starting at register {ROM_START_REGISTER}...")
+        roms = read_sensor_roms(client, ROM_START_REGISTER, NUM_SENSORS, ROM_REGISTERS_PER_SENSOR)
+        if roms:
+            try:
+                conn = psycopg2.connect(DATABASE_URL)
+                cursor = conn.cursor()
+                for port, rom in roms.items():
+                    # Update rom_code only if present; allow overwrite if changed
+                    cursor.execute(
+                        "UPDATE sensors SET rom_code = %s WHERE port_number = %s",
+                        (rom, port)
+                    )
+                    print(f"Updated ROM for port {port}: {rom}")
+                conn.commit()
+                cursor.close()
+                conn.close()
+            except Exception as e:
+                print(f"ERROR: Failed to update sensors table with ROMs: {e}")
+        else:
+            print("No ROMs read from device (device may not expose them via MODBUS)")
     
     try:
         while True:

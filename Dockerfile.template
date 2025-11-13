@@ -15,9 +15,8 @@ RUN pip3 install --no-cache-dir pymodbus pyserial psycopg2-binary
 # Copy application
 COPY temp_monitor.py /usr/src/app/temp_monitor.py
 RUN chmod +x /usr/src/app/temp_monitor.py
-
 WORKDIR /usr/src/app
-
+ 
 CMD ["python3", "/usr/src/app/temp_monitor.py"]
 
 FROM balenalib/%%BALENA_MACHINE_NAME%%-alpine-python as dev
@@ -30,11 +29,13 @@ RUN pip3 install --no-cache-dir pymodbus pyserial psycopg2-binary
 
 # Copy application
 COPY temp_monitor.py /usr/src/app/temp_monitor.py
-RUN chmod +x /usr/src/app/temp_monitor.py
+COPY calibrate.py /usr/src/app/calibrate.py
+COPY start_dev.sh /usr/src/app/start_dev.sh
+RUN chmod +x /usr/src/app/temp_monitor.py /usr/src/app/calibrate.py /usr/src/app/start_dev.sh
 
 # Copy Warp-compatible bashrc configuration
 COPY .bashrc /etc/bash.bashrc
 
 WORKDIR /usr/src/app
 
-CMD ["python3", "/usr/src/app/temp_monitor.py"]
+CMD ["sh", "-c", "/usr/src/app/start_dev.sh"]
