@@ -193,6 +193,24 @@ def display_sensors_calibration():
     except Exception as e:
         print(f"WARNING: Could not display sensors table: {e}\n")
 
+
+def get_port_map():
+    """Return a mapping of port_number -> (id, calibration_offset_raw) from sensors table.
+
+    This is a small helper so the main loop can display adjusted temperatures
+    using the same offsets that are applied when storing readings.
+    """
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, port_number, calibration_offset_raw FROM sensors")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return {row[1]: (row[0], row[2] or 0) for row in rows}
+    except Exception:
+        return {}
+
 def store_sensor_data(temperatures):
     """Store sensor readings in TimescaleDB"""
     if not temperatures:
@@ -321,41 +339,61 @@ def read_temperature_sensors(client, num_sensors=8):
     
     return temperatures
 
-def display_temperatures(temperatures):
-    """Display temperature readings in a formatted way"""
-    print("\n" + "="*60)
+def display_temperatures(temperatures, port_map=None):
+    """Display temperature readings in the user's requested layout.
+
+    Columns: [Raw][offset]  [raw_c] [true_c] [true_f] [status]
+    """
+    print("\n" + "="*80)
     print("DS18B20 Temperature Sensor Status")
-    print("="*60)
+    print("="*80)
     print(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print("-"*60)
-    
+    print("-"*80)
+
     if not temperatures:
         print("No sensor data available")
         return
-    
-    print(f"{'Sensor':<10} {'Raw Value':<12} {'°C':<12} {'°F':<12} {'Status'}")
-    print("-"*60)
-    
-    for sensor_num in range(1, 9):
+
+    print(f"{'Sensor':<8} {'Raw[offset]':<16} {'Raw °C':<12} {'True °C':<12} {'True °F':<12} {'Status'}")
+    print("-"*80)
+
+    for sensor_num in range(1, NUM_SENSORS + 1):
         if sensor_num in temperatures:
             data = temperatures[sensor_num]
-            temp_c = data['celsius']
-            temp_f = data['fahrenheit']
             raw = data['raw']
-            
-            # Determine sensor status
-            if temp_c < -55 or temp_c > 125:
+            raw_c = data['celsius']
+
+            # Determine sensor status based on unadjusted reading
+            if raw_c < -55 or raw_c > 125:
                 status = "OUT OF RANGE"
             elif raw == 0 or raw == 0xFFFF:
                 status = "NOT CONNECTED"
             else:
                 status = "OK"
-            
-            print(f"Sensor {sensor_num:<3} {raw:<12} {temp_c:>6.1f}°C     {temp_f:>6.1f}°F     {status}")
+
+            # Calibration offset for this port (raw units)
+            offset = 0
+            if port_map and sensor_num in port_map:
+                _, offset = port_map[sensor_num]
+            offset = int(offset or 0)
+
+            # Adjusted/raw with offset applied and convert to °C/°F
+            adjusted_raw = raw + offset
+            if adjusted_raw > 32767:
+                true_c = (adjusted_raw - 65536) / 10.0
+            else:
+                true_c = adjusted_raw / 10.0
+            true_f = (true_c * 9/5) + 32
+
+            # Format raw with signed offset like: 210[+2]
+            sign = '+' if offset >= 0 else '-'
+            raw_with_off = f"{raw}[{sign}{abs(offset)}]"
+
+            print(f"Sensor {sensor_num:<3} {raw_with_off:<16} {raw_c:>6.1f}°C     {true_c:>6.1f}°C     {true_f:>6.1f}°F     {status}")
         else:
-            print(f"Sensor {sensor_num:<3} {'N/A':<12} {'N/A':<12} {'N/A':<12} {'NO DATA'}")
-    
-    print("="*60 + "\n")
+            print(f"Sensor {sensor_num:<3} {'N/A':<16} {'N/A':<12} {'N/A':<12} {'N/A':<12} {'NO DATA'}")
+
+    print("="*80 + "\n")
 
 def main():
     """Main monitoring loop"""
@@ -417,9 +455,11 @@ def main():
     try:
         while True:
             temperatures = read_temperature_sensors(client, NUM_SENSORS)
-            display_temperatures(temperatures)
-            
-            # Store data in database
+            # Load current offsets for display (keeps display in sync with stored calibration)
+            port_map = get_port_map()
+            display_temperatures(temperatures, port_map)
+
+            # Store data in database (store_sensor_data will still apply offsets when writing)
             store_sensor_data(temperatures)
             
             # Read at configured interval

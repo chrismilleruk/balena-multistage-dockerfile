@@ -14,7 +14,8 @@ RUN pip3 install --no-cache-dir pymodbus pyserial psycopg2-binary
 
 # Copy application
 COPY temp_monitor.py /usr/src/app/temp_monitor.py
-RUN chmod +x /usr/src/app/temp_monitor.py
+COPY calibrate.py /usr/src/app/calibrate.py
+RUN chmod +x /usr/src/app/temp_monitor.py /usr/src/app/calibrate.py
 WORKDIR /usr/src/app
  
 CMD ["python3", "/usr/src/app/temp_monitor.py"]

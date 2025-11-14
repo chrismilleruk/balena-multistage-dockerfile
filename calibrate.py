@@ -96,11 +96,11 @@ def compute_offsets_reference(data, ref_id):
 
 
 def apply_offsets(conn, offsets):
-    """Write computed offsets to sensors.calibration_offset."""
+    """Write computed offsets to sensors.calibration_offset_raw."""
     cursor = conn.cursor()
     for sid, offset in offsets.items():
         cursor.execute(
-            "UPDATE sensors SET calibration_offset = %s WHERE id = %s",
+            "UPDATE sensors SET calibration_offset_raw = %s WHERE id = %s",
             (float(offset), int(sid))
         )
     conn.commit()
