@@ -53,6 +53,21 @@ services:
       retries: 3
       start_period: 40s
 
+  hubitat-agent:
+    build:
+      context: .
+      dockerfile: hubitat_agent/Dockerfile
+    depends_on:
+      - timescaledb
+    environment:
+      HUBITAT_API_URL: "http://192.168.10.109/apps/api/50/devices/all?access_token=cab9d803-e74b-443d-a81c-bba57d8b274b"
+      HUBITAT_HOST: ""
+      HUBITAT_TOKEN: ""
+      TIMESCALEDB_URL: postgresql://sensor_user:sensor_password@timescaledb:5432/sensor_data
+      POLL_INTERVAL_SECONDS: 15
+      MODE: poll
+    restart: unless-stopped
+
 volumes:
   timescaledb_dev_data:
   grafana_data:

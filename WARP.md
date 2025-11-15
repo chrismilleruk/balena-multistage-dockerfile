@@ -52,6 +52,19 @@ balena push <device-ip> --local
 # The dev override with live-reload only works in local mode push
 ```
 
+### Database Queries
+
+```bash
+# Run SQL queries on the TimescaleDB container
+echo "psql -U sensor_user -d sensor_data -c 'YOUR_QUERY_HERE'" | balena device ssh <device-ip> timescaledb
+
+# Example: Count rows in trv_temperatures table
+echo "psql -U sensor_user -d sensor_data -c 'SELECT COUNT(*) FROM trv_temperatures;'" | balena device ssh c45f46e.local timescaledb
+
+# Example: View recent TRV data
+echo "psql -U sensor_user -d sensor_data -c 'SELECT time, device_id, room, temperature, setpoint FROM trv_temperatures ORDER BY time DESC LIMIT 10;'" | balena device ssh c45f46e.local timescaledb
+```
+
 ## Development Workflow
 
 When modifying the Dockerfile:
