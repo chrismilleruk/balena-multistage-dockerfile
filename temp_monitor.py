@@ -27,6 +27,9 @@ BYTESIZE = int(os.getenv('BYTESIZE', '8'))
 TEMP_START_REGISTER = int(os.getenv('TEMP_START_REGISTER', '0'))
 NUM_SENSORS = int(os.getenv('NUM_SENSORS', '8'))
 POLL_INTERVAL = int(os.getenv('POLL_INTERVAL', '15'))
+# Debug display: set TEMP_MONITOR_DEBUG=1 or pass --debug on the command line to see full table output
+DEBUG_ENV = os.getenv('TEMP_MONITOR_DEBUG', '')
+DEBUG = (DEBUG_ENV.lower() in ('1', 'true', 'yes')) or ('--debug' in sys.argv)
 
 # Optional: registers where DS18B20 ROM codes are exposed by the device
 # If your MODBUS device exposes the 8-byte ROM per sensor in holding registers,
@@ -395,6 +398,36 @@ def display_temperatures(temperatures, port_map=None):
 
     print("="*80 + "\n")
 
+
+def display_temperatures_compact(temperatures, port_map=None):
+    """Print a single-line compressed summary with raw+offset for each sensor.
+
+    Example output:
+    2025-11-15 12:00:00 | 1:210[+2] 2:220[+0] 3:N/A ...
+    """
+    ts = time.strftime('%Y-%m-%d %H:%M:%S')
+    parts = []
+
+    for sensor_num in range(1, NUM_SENSORS + 1):
+        if sensor_num in temperatures:
+            data = temperatures[sensor_num]
+            raw = data.get('raw')
+
+            offset = 0
+            if port_map and sensor_num in port_map:
+                _, offset = port_map[sensor_num]
+            offset = int(offset or 0)
+
+            sign = '+' if offset >= 0 else '-'
+            raw_with_off = f"{raw}[{sign}{abs(offset)}]"
+        else:
+            raw_with_off = "N/A"
+
+        parts.append(f"{sensor_num}:{raw_with_off}")
+
+    # Join parts and print one single line
+    print(f"{ts} | {' '.join(parts)}")
+
 def main():
     """Main monitoring loop"""
     print("Temperature Monitor Starting...")
@@ -403,6 +436,7 @@ def main():
     print(f"Baudrate: {BAUDRATE}")
     print(f"Database URL: {DATABASE_URL}")
     print(f"Poll Interval: {POLL_INTERVAL}")
+    print(f"Debug display: {DEBUG}")
     
     # Initialize database
     print("\nInitializing database...")
@@ -457,11 +491,16 @@ def main():
             temperatures = read_temperature_sensors(client, NUM_SENSORS)
             # Load current offsets for display (keeps display in sync with stored calibration)
             port_map = get_port_map()
-            display_temperatures(temperatures, port_map)
+
+            # Display either the full debugging table or a compact single-line summary
+            if DEBUG:
+                display_temperatures(temperatures, port_map)
+            else:
+                display_temperatures_compact(temperatures, port_map)
 
             # Store data in database (store_sensor_data will still apply offsets when writing)
             store_sensor_data(temperatures)
-            
+
             # Read at configured interval
             time.sleep(POLL_INTERVAL)
     
